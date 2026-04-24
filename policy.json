@@ -1,0 +1,76 @@
+{
+  "memory_warning_mb": 500,
+  "vt_detection_threshold": 3,
+  "kill_process_names": [
+    "virus.exe"
+  ],
+  "protected_process_names": [
+    "system",
+    "registry",
+    "smss.exe",
+    "csrss.exe",
+    "wininit.exe",
+    "services.exe",
+    "lsass.exe",
+    "svchost.exe",
+    "winlogon.exe",
+    "explorer.exe",
+    "dwm.exe"
+  ],
+  "allow_quarantine_from_system_dirs": false,
+  "system_dir_prefixes": [
+    "%WINDIR%",
+    "%PROGRAMFILES%",
+    "%PROGRAMFILES(X86)%"
+  ],
+  "rules": [
+    {
+      "id": "name-virus-exe",
+      "description": "If the process is named virus.exe, kill it and quarantine the executable.",
+      "when": {
+        "process_name_equals": "virus.exe"
+      },
+      "actions": [
+        "kill",
+        "quarantine"
+      ]
+    },
+    {
+      "id": "vt-detections-over-threshold",
+      "description": "If VirusTotal has more than 3 malicious/suspicious detections, suspend, dump, and quarantine.",
+      "when": {
+        "vt_detections_gt": 3
+      },
+      "actions": [
+        "suspend",
+        "dump_memory",
+        "quarantine"
+      ]
+    },
+    {
+      "id": "memory-over-threshold",
+      "description": "If RSS memory is over 500 MB, log a warning.",
+      "when": {
+        "memory_mb_gt": 500
+      },
+      "actions": [
+        "log_warning"
+      ]
+    }
+  ],
+  "virustotal": {
+    "enabled": true,
+    "rate_limit_seconds": 16,
+    "cache_ttl_hours": 168,
+    "upload_unknown_files": false,
+    "max_upload_mb": 32,
+    "max_new_paths_per_cycle": 4
+  },
+  "dump": {
+    "procdump_path": "procdump.exe",
+    "dump_folder": "dumps"
+  },
+  "quarantine": {
+    "folder": "quarantine"
+  }
+}
