@@ -1,4 +1,4 @@
-# Process Defender TUI
+# Proc Blart TUI
 
 A Windows-focused process monitor with a terminal UI, policy-based alerts, and optional VirusTotal reputation checks.
 
@@ -10,7 +10,7 @@ A Windows-focused process monitor with a terminal UI, policy-based alerts, and o
 - Applies editable rules from `policy.json`
 - Writes alerts and actions as JSONL logs
 - Runs in safe dry-run mode by default
-- Freezes/resumes the live view with `Ctrl+F`
+- Freezes/resumes the live view with `Space`
 - Can optionally kill, suspend, dump memory, and quarantine when started with `--execute`
 
 ## Install
@@ -136,16 +136,16 @@ PowerShell launcher equivalent:
 Default data folder:
 
 ```text
-.\defender_data\
+.\proc_blart_data\
 ```
 
 Log files:
 
 ```text
-defender_data\logs\alerts.jsonl
-defender_data\logs\actions.jsonl
-defender_data\logs\virustotal.jsonl
-defender_data\logs\manual_scan.jsonl
+proc_blart_data\logs\alerts.jsonl
+proc_blart_data\logs\actions.jsonl
+proc_blart_data\logs\virustotal.jsonl
+proc_blart_data\logs\manual_scan.jsonl
 ```
 
 Tail logs:

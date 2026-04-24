@@ -30,8 +30,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-APP_NAME = "Process Defender TUI"
-DEFAULT_WORKDIR = Path.cwd() / "defender_data"
+APP_NAME = "Proc Blart TUI"
+DEFAULT_WORKDIR = Path.cwd() / "proc_blart_data"
 VT_FILE_REPORT_URL = "https://www.virustotal.com/api/v3/files/{sha256}"
 VT_UPLOAD_URL = "https://www.virustotal.com/api/v3/files"
 MB = 1024 * 1024
@@ -1051,7 +1051,7 @@ class ProcessMonitorApp:
             api = "[green]enabled[/green]" if get_virustotal_api_key() else "[red]missing key[/red]"
             source = "local"
         uptime = int(time.time() - self.start_time)
-        freeze = "[bold cyan]FROZEN[/bold cyan] | Ctrl+F resume" if self.frozen.is_set() else "Ctrl+F freeze"
+        freeze = "[bold cyan]FROZEN[/bold cyan] | Space resume" if self.frozen.is_set() else "Space freeze"
         text = (
             f"[bold]{APP_NAME}[/bold] | source: {source} | mode: {mode} | VT: {api} | "
             f"queue: {self.vt_scanner.queue_size} | uptime: {uptime}s | {freeze} | PgUp/PgDn scroll | s sort | r reverse | Ctrl+C exit"

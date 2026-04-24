@@ -1,4 +1,4 @@
-# Install Process Defender TUI dependencies on Windows.
+# Install Proc Blart TUI dependencies on Windows.
 
 [CmdletBinding()]
 param(

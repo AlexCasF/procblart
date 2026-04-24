@@ -4,5 +4,6 @@ __pycache__/
 .venv/
 *.egg-info/
 
-# Process Defender runtime data
+# Proc Blart runtime data
+proc_blart_data/
 defender_data/

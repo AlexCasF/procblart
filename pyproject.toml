@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "procblart"
 version = "0.1.0"
-description = "Process Defender TUI"
+description = "Proc Blart TUI"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-procblart = "process_defender:main"
+procblart = "proc_blart:main"
 
 [tool.setuptools]
-py-modules = ["process_defender"]
+py-modules = ["proc_blart"]

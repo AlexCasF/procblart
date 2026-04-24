@@ -1,4 +1,4 @@
-# Launch Process Defender TUI from the project folder.
+# Launch Proc Blart TUI from the project folder.
 
 [CmdletBinding()]
 param(
@@ -7,7 +7,7 @@ param(
     [string]$ScanFile,
     [string]$Remote,
     [string]$Policy = "policy.json",
-    [string]$Workdir = "defender_data",
+    [string]$Workdir = "proc_blart_data",
     [double]$Interval = 2.0,
     [int]$MaxRows = 30,
     [switch]$CurrentTerminal
@@ -53,12 +53,12 @@ if (-not $env:VIRUSTOTAL_API_KEY) {
 
 if ($ScanFile) {
     $ResolvedScanFile = (Resolve-Path -LiteralPath $ScanFile).Path
-    & $PythonPath "process_defender.py" "scan-file" $ResolvedScanFile "--policy" $ResolvedPolicy "--workdir" $ResolvedWorkdir
+    & $PythonPath "proc_blart.py" "scan-file" $ResolvedScanFile "--policy" $ResolvedPolicy "--workdir" $ResolvedWorkdir
     exit $LASTEXITCODE
 }
 
 $MonitorArgs = @(
-    "process_defender.py",
+    "proc_blart.py",
     "monitor",
     "--interval", $Interval.ToString([System.Globalization.CultureInfo]::InvariantCulture),
     "--max-rows", $MaxRows.ToString([System.Globalization.CultureInfo]::InvariantCulture),
@@ -82,8 +82,8 @@ function ConvertTo-PowerShellSingleQuotedArgument {
 
 $RelativePython = ".\.venv\Scripts\python.exe"
 $MonitorCommand = "& " + (ConvertTo-PowerShellSingleQuotedArgument $RelativePython) + " " + (($MonitorArgs | ForEach-Object { ConvertTo-PowerShellSingleQuotedArgument $_ }) -join " ")
-$AlertsCommand = "& " + (ConvertTo-PowerShellSingleQuotedArgument $RelativePython) + " 'process_defender.py' 'tail' '--log' 'alerts' '--workdir' " + (ConvertTo-PowerShellSingleQuotedArgument $ResolvedWorkdir)
-$ActionsCommand = "& " + (ConvertTo-PowerShellSingleQuotedArgument $RelativePython) + " 'process_defender.py' 'tail' '--log' 'actions' '--workdir' " + (ConvertTo-PowerShellSingleQuotedArgument $ResolvedWorkdir)
+$AlertsCommand = "& " + (ConvertTo-PowerShellSingleQuotedArgument $RelativePython) + " 'proc_blart.py' 'tail' '--log' 'alerts' '--workdir' " + (ConvertTo-PowerShellSingleQuotedArgument $ResolvedWorkdir)
+$ActionsCommand = "& " + (ConvertTo-PowerShellSingleQuotedArgument $RelativePython) + " 'proc_blart.py' 'tail' '--log' 'actions' '--workdir' " + (ConvertTo-PowerShellSingleQuotedArgument $ResolvedWorkdir)
 
 if ((-not $CurrentTerminal) -and (Get-Command wt -ErrorAction SilentlyContinue)) {
     $WtArgs = @(
