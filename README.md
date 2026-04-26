@@ -15,6 +15,22 @@ A Windows-focused process monitor with a terminal UI, policy-based alerts, and o
 
 ## Install
 
+From a fresh machine:
+
+```powershell
+irm https://raw.githubusercontent.com/AlexCasF/proc-blart/main/bootstrap.ps1 | iex
+```
+
+Safer review-first flow:
+
+```powershell
+curl.exe -L https://raw.githubusercontent.com/AlexCasF/proc-blart/main/bootstrap.ps1 -o bootstrap.ps1
+notepad .\bootstrap.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
+```
+
+From a cloned repo:
+
 ```powershell
 .\install.ps1
 ```
