@@ -1030,10 +1030,16 @@ class ProcessMonitorApp:
             Layout(name="main", ratio=1),
             Layout(self._footer(), size=3),
         )
-        layout["main"].split_row(
-            Layout(self._process_table(), ratio=3),
-            Layout(name="side", ratio=2),
-        )
+        if self.console.size.width >= 150:
+            layout["main"].split_row(
+                Layout(self._process_table(), ratio=3),
+                Layout(name="side", ratio=2),
+            )
+        else:
+            layout["main"].split_column(
+                Layout(self._process_table(), ratio=3),
+                Layout(name="side", ratio=2),
+            )
         layout["side"].split_column(
             Layout(self._vt_panel(), ratio=1),
             Layout(self._alerts_panel(), ratio=1),
@@ -1073,15 +1079,15 @@ class ProcessMonitorApp:
 
     def _process_table(self) -> Panel:
         table = Table(box=box.SIMPLE_HEAVY, expand=True)
-        table.add_column("PID", justify="right", no_wrap=True)
-        table.add_column("Name", overflow="fold")
-        table.add_column("CPU %", justify="right")
-        table.add_column("Mem MB", justify="right")
-        table.add_column("VT", justify="center")
-        table.add_column("Det", justify="right")
-        table.add_column("Policy")
-        table.add_column("Started", no_wrap=True)
-        table.add_column("Executable", overflow="fold")
+        table.add_column("PID", justify="right", no_wrap=True, min_width=5)
+        table.add_column("Name", no_wrap=True, overflow="ellipsis", min_width=10, ratio=2)
+        table.add_column("CPU %", justify="right", no_wrap=True, min_width=5)
+        table.add_column("Mem MB", justify="right", no_wrap=True, min_width=6)
+        table.add_column("VT", justify="center", no_wrap=True, min_width=6)
+        table.add_column("Det", justify="right", no_wrap=True, min_width=3)
+        table.add_column("Policy", no_wrap=True, overflow="ellipsis", min_width=8, ratio=2)
+        table.add_column("Started", no_wrap=True, min_width=14)
+        table.add_column("Executable", no_wrap=True, overflow="ellipsis", min_width=20, ratio=5)
 
         visible_rows = self.rows[self.scroll_offset : self.scroll_offset + self.args.max_rows]
         for row in visible_rows:
