@@ -42,6 +42,7 @@ SORT_MODES = [
     ("pid", "PID", False),
     ("name", "Name", False),
 ]
+REMOTE_TRANSPORTS = ("auto", "wsman", "dcom")
 
 
 DEFAULT_POLICY: dict[str, Any] = {
@@ -160,10 +161,62 @@ class ProcessRow:
     policy_hits: list[str] = field(default_factory=list)
 
 
+def powershell_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def is_local_remote_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    local_names = {".", "localhost", "127.0.0.1", "::1"}
+    computer_name = os.environ.get("COMPUTERNAME", "").strip().lower()
+    if computer_name:
+        local_names.add(computer_name)
+    return normalized in local_names
+
+
+def compact_error_line(message: str, limit: int = 220) -> str:
+    for raw_line in message.splitlines():
+        line = " ".join(raw_line.strip().split())
+        if not line:
+            continue
+        if line.startswith(("+", "At line:", "CategoryInfo", "FullyQualifiedErrorId")):
+            continue
+        if len(line) > limit:
+            return line[: limit - 3].rstrip() + "..."
+        return line
+    return "Unknown error"
+
+
+def remote_connection_help(host: str, transport: str, failures: dict[str, str]) -> str:
+    tried = ", ".join(failures) if failures else transport
+    lines = [
+        f"Remote collection failed for {host}. Tried: {tried}.",
+        "",
+    ]
+    for name, message in failures.items():
+        lines.extend([f"{name.upper()} error:", compact_error_line(message, 500), ""])
+
+    lines.extend(
+        [
+            "Setup checks:",
+            f"- Test from PowerShell: Test-WSMan {host}",
+            f"- For WinRM from a workgroup/IP, add the host on this computer: Set-Item WSMan:\\localhost\\Client\\TrustedHosts -Value \"{host}\" -Concatenate -Force",
+            "- On the target, enable WinRM from elevated PowerShell: Enable-PSRemoting -Force",
+            f"- Or try DCOM/WMI instead: procblart run -remote {host} --remote-transport dcom",
+            "- For DCOM/WMI, the target must allow the Windows Management Instrumentation (WMI) firewall group.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 class RemoteProcessCollector:
-    def __init__(self, host: str, timeout: float = 15.0) -> None:
+    def __init__(self, host: str, timeout: float = 15.0, transport: str = "auto") -> None:
+        if transport not in REMOTE_TRANSPORTS:
+            raise ValueError(f"Remote transport must be one of: {', '.join(REMOTE_TRANSPORTS)}")
         self.host = host
         self.timeout = timeout
+        self.transport = transport
+        self.last_transport = ""
         self.last_error = ""
 
     def collect(self) -> list[ProcessRow]:
@@ -173,56 +226,90 @@ class RemoteProcessCollector:
         if not powershell:
             raise RuntimeError("PowerShell was not found.")
         validate_remote_host(self.host)
-        host_literal = "'" + self.host.replace("'", "''") + "'"
+        transports = ["wsman", "dcom"] if self.transport == "auto" else [self.transport]
+        if is_local_remote_host(self.host):
+            transports = ["local"]
 
-        script = f"$ComputerName = {host_literal}\n" + r"""
+        failures: dict[str, str] = {}
+        for transport in transports:
+            try:
+                rows = self._collect_with_transport(powershell, transport)
+                self.last_transport = transport
+                self.last_error = ""
+                return rows
+            except Exception as e:
+                failures[transport] = str(e)
+                if self.transport != "auto":
+                    break
+
+        self.last_error = remote_connection_help(self.host, self.transport, failures)
+        raise RuntimeError(self.last_error)
+
+    def _collect_with_transport(self, powershell: str, transport: str) -> list[ProcessRow]:
+        host_literal = powershell_single_quote(self.host)
+        transport_literal = powershell_single_quote(transport)
+
+        script = f"$ComputerName = {host_literal}\n$Transport = {transport_literal}\n" + r"""
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
 
 $IsLocal = $ComputerName -in @(".", "localhost", "127.0.0.1", "::1", $env:COMPUTERNAME)
-if ($IsLocal) {
-    $Processes = Get-CimInstance -ClassName Win32_Process
-    $Perf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfProc_Process
-} else {
-    $Processes = Get-CimInstance -ComputerName $ComputerName -ClassName Win32_Process
-    $Perf = Get-CimInstance -ComputerName $ComputerName -ClassName Win32_PerfFormattedData_PerfProc_Process
-}
-
-$CpuByPid = @{}
-foreach ($Counter in $Perf) {
-    if ($null -ne $Counter.IDProcess) {
-        $CpuByPid[[int]$Counter.IDProcess] = [double]$Counter.PercentProcessorTime
+$CimSession = $null
+try {
+    if ($IsLocal) {
+        $Processes = Get-CimInstance -ClassName Win32_Process
+        $Perf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfProc_Process
+    } elseif ($Transport -eq "dcom") {
+        $SessionOption = New-CimSessionOption -Protocol Dcom
+        $CimSession = New-CimSession -ComputerName $ComputerName -SessionOption $SessionOption
+        $Processes = Get-CimInstance -CimSession $CimSession -ClassName Win32_Process
+        $Perf = Get-CimInstance -CimSession $CimSession -ClassName Win32_PerfFormattedData_PerfProc_Process
+    } else {
+        $Processes = Get-CimInstance -ComputerName $ComputerName -ClassName Win32_Process
+        $Perf = Get-CimInstance -ComputerName $ComputerName -ClassName Win32_PerfFormattedData_PerfProc_Process
     }
-}
 
-$Rows = @(
-    foreach ($Process in $Processes) {
-        $PidValue = [int]$Process.ProcessId
-        $CpuValue = 0.0
-        if ($CpuByPid.ContainsKey($PidValue)) {
-            $CpuValue = [double]$CpuByPid[$PidValue]
-        }
-        $StartedEpoch = 0
-        $StartedAt = ""
-        if ($Process.CreationDate) {
-            $StartedDate = [datetime]$Process.CreationDate
-            $StartedEpoch = ([DateTimeOffset]$StartedDate.ToUniversalTime()).ToUnixTimeSeconds()
-            $StartedAt = $StartedDate.ToString("MM-dd HH:mm:ss")
-        }
-
-        [pscustomobject]@{
-            pid = $PidValue
-            name = [string]$Process.Name
-            username = ""
-            exe = [string]$Process.ExecutablePath
-            cpu_percent = $CpuValue
-            memory_mb = [math]::Round(([double]$Process.WorkingSetSize / 1MB), 1)
-            started_epoch = $StartedEpoch
-            started_at = $StartedAt
+    $CpuByPid = @{}
+    foreach ($Counter in $Perf) {
+        if ($null -ne $Counter.IDProcess) {
+            $CpuByPid[[int]$Counter.IDProcess] = [double]$Counter.PercentProcessorTime
         }
     }
-)
 
-ConvertTo-Json -InputObject $Rows -Compress -Depth 3
+    $Rows = @(
+        foreach ($Process in $Processes) {
+            $PidValue = [int]$Process.ProcessId
+            $CpuValue = 0.0
+            if ($CpuByPid.ContainsKey($PidValue)) {
+                $CpuValue = [double]$CpuByPid[$PidValue]
+            }
+            $StartedEpoch = 0
+            $StartedAt = ""
+            if ($Process.CreationDate) {
+                $StartedDate = [datetime]$Process.CreationDate
+                $StartedEpoch = ([DateTimeOffset]$StartedDate.ToUniversalTime()).ToUnixTimeSeconds()
+                $StartedAt = $StartedDate.ToString("MM-dd HH:mm:ss")
+            }
+
+            [pscustomobject]@{
+                pid = $PidValue
+                name = [string]$Process.Name
+                username = ""
+                exe = [string]$Process.ExecutablePath
+                cpu_percent = $CpuValue
+                memory_mb = [math]::Round(([double]$Process.WorkingSetSize / 1MB), 1)
+                started_epoch = $StartedEpoch
+                started_at = $StartedAt
+            }
+        }
+    )
+
+    ConvertTo-Json -InputObject $Rows -Compress -Depth 3
+} finally {
+    if ($null -ne $CimSession) {
+        Remove-CimSession -CimSession $CimSession
+    }
+}
 """
         result = subprocess.run(
             [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
@@ -237,7 +324,10 @@ ConvertTo-Json -InputObject $Rows -Compress -Depth 3
         if not result.stdout.strip():
             return []
 
-        data = json.loads(result.stdout)
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"PowerShell returned invalid process JSON: {e}: {result.stdout[:500]}") from e
         if isinstance(data, dict):
             data = [data]
 
@@ -811,12 +901,17 @@ class ProcessMonitorApp:
         self.keyboard = KeyboardWatcher(self.handle_key)
         self.remote_host = str(getattr(args, "remote", "") or "")
         self.remote_collector = (
-            RemoteProcessCollector(self.remote_host, timeout=float(getattr(args, "remote_timeout", 15.0)))
+            RemoteProcessCollector(
+                self.remote_host,
+                timeout=float(getattr(args, "remote_timeout", 15.0)),
+                transport=str(getattr(args, "remote_transport", "auto") or "auto"),
+            )
             if self.remote_host
             else None
         )
         self.remote_acted: set[str] = set()
         self.remote_error = ""
+        self.last_logged_remote_error = ""
 
     def handle_key(self, key: str) -> None:
         if key == "space":
@@ -954,9 +1049,19 @@ class ProcessMonitorApp:
         try:
             rows = self.remote_collector.collect()
             self.remote_error = ""
+            self.last_logged_remote_error = ""
         except Exception as e:
             self.remote_error = str(e)
-            self.alert_log.write({"type": "remote_error", "message": self.remote_error, "remote": self.remote_host})
+            if self.remote_error != self.last_logged_remote_error:
+                self.alert_log.write(
+                    {
+                        "type": "remote_error",
+                        "message": compact_error_line(self.remote_error),
+                        "detail": self.remote_error,
+                        "remote": self.remote_host,
+                    }
+                )
+                self.last_logged_remote_error = self.remote_error
             return self.rows
 
         for row in rows:
@@ -1090,6 +1195,12 @@ class ProcessMonitorApp:
         table.add_column("Executable", no_wrap=True, overflow="ellipsis", min_width=20, ratio=5)
 
         visible_rows = self.rows[self.scroll_offset : self.scroll_offset + self.args.max_rows]
+        if not visible_rows:
+            message = "No remote process data yet" if self.remote_collector else "No processes found"
+            if self.remote_collector and self.remote_error:
+                message = "Remote collection failed; see Alerts/Remote panels"
+            table.add_row("", message, "", "", "", "", "", "", "", style="dim")
+
         for row in visible_rows:
             style = ""
             if row.vt.detections > int(self.policy.get("vt_detection_threshold", 3)):
@@ -1118,14 +1229,15 @@ class ProcessMonitorApp:
 
     def _vt_panel(self) -> Panel:
         if self.remote_collector:
+            active_transport = self.remote_collector.last_transport or self.remote_collector.transport
             lines = [
                 f"Host: {self.remote_host}",
                 "Mode: read-only",
-                "Collector: PowerShell CIM/WMI",
+                f"Collector: PowerShell CIM/WMI ({active_transport})",
                 "VirusTotal: disabled",
             ]
             if self.remote_error:
-                lines.extend(["", "[bold red]Last error[/bold red]", self.remote_error[:500]])
+                lines.extend(["", "[bold red]Last error[/bold red]", self.remote_error[:900]])
             return Panel("\n".join(lines), title="Remote", border_style="magenta")
 
         lines = [
@@ -1351,6 +1463,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--workdir", type=Path, default=DEFAULT_WORKDIR, help="Data folder for logs/cache/dumps/quarantine")
         p.add_argument("-remote", "--remote", help="Read-only remote Windows host/IP to monitor over PowerShell CIM")
         p.add_argument("--remote-timeout", type=float, default=15.0, help="Remote CIM query timeout in seconds")
+        p.add_argument(
+            "--remote-transport",
+            choices=REMOTE_TRANSPORTS,
+            default="auto",
+            help="Remote CIM transport: auto tries WinRM/WSMan then DCOM/WMI",
+        )
         p.add_argument("-dry", "--dry", "--dry-run", dest="dry_run", action="store_true", help="Run in dry-run mode (default)")
         p.add_argument(
             "-exec",

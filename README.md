@@ -100,7 +100,14 @@ Read-only remote monitor for one Windows LAN host:
 procblart run -remote 192.168.1.25
 ```
 
-Remote mode uses PowerShell CIM/WMI from the local machine, does not perform VirusTotal lookups, and does not kill, suspend, dump, or quarantine remote processes. The target must allow remote CIM/WinRM access for your account.
+Remote mode uses PowerShell CIM/WMI from the local machine, does not perform VirusTotal lookups, and does not kill, suspend, dump, or quarantine remote processes. By default it tries WinRM/WSMan first and then DCOM/WMI as a fallback. You can force one transport while troubleshooting:
+
+```powershell
+procblart run -remote 192.168.1.25 --remote-transport wsman
+procblart run -remote 192.168.1.25 --remote-transport dcom
+```
+
+The target must allow remote CIM/WMI access for your account.
 
 Typical remote requirements:
 
@@ -109,6 +116,20 @@ Typical remote requirements:
 - Your account has permission to query CIM/WMI on the target.
 - Domain/Kerberos works by name, or the host is configured appropriately for trusted-host/non-domain access.
 
+Useful setup and checks for a lab LAN:
+
+```powershell
+# On the target, from elevated PowerShell:
+Enable-PSRemoting -Force
+
+# On the Proc Blart computer, from elevated PowerShell, for workgroup/IP WinRM:
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value "192.168.1.25" -Concatenate -Force
+Test-WSMan 192.168.1.25
+
+# If using the DCOM/WMI fallback, enable the target firewall group:
+Enable-NetFirewallRule -DisplayGroup "Windows Management Instrumentation (WMI)"
+```
+
 You can also use the PowerShell launcher:
 
 ```powershell
@@ -116,6 +137,7 @@ You can also use the PowerShell launcher:
 .\launch.ps1 -DryRun
 .\launch.ps1 -Execute
 .\launch.ps1 -Remote 192.168.1.25
+.\launch.ps1 -Remote 192.168.1.25 -RemoteTransport dcom
 ```
 
 Run the launcher in the current terminal instead of opening Windows Terminal panes:

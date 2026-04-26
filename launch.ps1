@@ -6,6 +6,8 @@ param(
     [switch]$Execute,
     [string]$ScanFile,
     [string]$Remote,
+    [ValidateSet("auto", "wsman", "dcom")]
+    [string]$RemoteTransport = "auto",
     [string]$Policy = "policy.json",
     [string]$Workdir = "procblart_data",
     [double]$Interval = 2.0,
@@ -67,7 +69,7 @@ $MonitorArgs = @(
 )
 $Title = "Monitor (Dry Run)"
 if ($Remote) {
-    $MonitorArgs += @("--remote", $Remote)
+    $MonitorArgs += @("--remote", $Remote, "--remote-transport", $RemoteTransport)
     $Title = "Remote $Remote"
 }
 if ($Execute) {
