@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import datetime as dt
 import hashlib
@@ -464,6 +465,161 @@ try {
             if path and sha256:
                 hashes[path] = sha256
         return hashes
+
+
+class SshRemoteProcessCollector:
+    def __init__(self, target: str, timeout: float = 15.0) -> None:
+        validate_ssh_target(target)
+        self.target = target
+        self.timeout = timeout
+        self.last_transport = "ssh"
+        self.last_error = ""
+
+    def collect(self) -> list[ProcessRow]:
+        ssh = shutil.which("ssh")
+        if not ssh:
+            raise RuntimeError("ssh was not found in PATH.")
+
+        script = r"""
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$Processes = Get-CimInstance -ClassName Win32_Process
+$Perf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfProc_Process
+
+$CpuByPid = @{}
+foreach ($Counter in $Perf) {
+    if ($null -ne $Counter.IDProcess) {
+        $CpuByPid[[int]$Counter.IDProcess] = [double]$Counter.PercentProcessorTime
+    }
+}
+
+$Rows = @(
+    foreach ($Process in $Processes) {
+        $PidValue = [int]$Process.ProcessId
+        $CpuValue = 0.0
+        if ($CpuByPid.ContainsKey($PidValue)) {
+            $CpuValue = [double]$CpuByPid[$PidValue]
+        }
+        $StartedEpoch = 0
+        $StartedAt = ""
+        if ($Process.CreationDate) {
+            $StartedDate = [datetime]$Process.CreationDate
+            $StartedEpoch = ([DateTimeOffset]$StartedDate.ToUniversalTime()).ToUnixTimeSeconds()
+            $StartedAt = $StartedDate.ToString("MM-dd HH:mm:ss")
+        }
+
+        [pscustomobject]@{
+            pid = $PidValue
+            name = [string]$Process.Name
+            username = ""
+            exe = [string]$Process.ExecutablePath
+            cpu_percent = $CpuValue
+            memory_mb = [math]::Round(([double]$Process.WorkingSetSize / 1MB), 1)
+            started_epoch = $StartedEpoch
+            started_at = $StartedAt
+        }
+    }
+)
+
+ConvertTo-Json -InputObject $Rows -Compress -Depth 3
+"""
+        data = self._run_remote_powershell_json(ssh, script, timeout=self.timeout)
+        if isinstance(data, dict):
+            data = [data]
+
+        rows: list[ProcessRow] = []
+        for item in data:
+            rows.append(
+                ProcessRow(
+                    pid=int(item.get("pid") or 0),
+                    name=str(item.get("name") or ""),
+                    username=str(item.get("username") or ""),
+                    cpu_percent=float(item.get("cpu_percent") or 0.0),
+                    memory_mb=float(item.get("memory_mb") or 0.0),
+                    started_epoch=float(item.get("started_epoch") or 0.0),
+                    started_at=str(item.get("started_at") or ""),
+                    exe=str(item.get("exe") or ""),
+                    vt=VTResult(status="remote", message="VirusTotal lookup disabled in remote mode"),
+                )
+            )
+        self.last_error = ""
+        return rows
+
+    def hash_paths(self, paths: list[str]) -> dict[str, str]:
+        ssh = shutil.which("ssh")
+        if not ssh:
+            raise RuntimeError("ssh was not found in PATH.")
+        unique_paths = [path for path in dict.fromkeys(paths) if path]
+        if not unique_paths:
+            return {}
+
+        paths_json = json.dumps(unique_paths)
+        paths_literal = powershell_single_quote(paths_json)
+        script = f"$PathsJson = {paths_literal}\n" + r"""
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$Paths = ConvertFrom-Json -InputObject $PathsJson
+$Rows = foreach ($Path in $Paths) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        continue
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        continue
+    }
+    try {
+        $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+        [pscustomobject]@{
+            path = [string]$Path
+            sha256 = [string]$Hash
+        }
+    } catch {
+    }
+}
+
+ConvertTo-Json -InputObject @($Rows) -Compress -Depth 3
+"""
+        data = self._run_remote_powershell_json(ssh, script, timeout=max(self.timeout, 30.0))
+        if isinstance(data, dict):
+            data = [data]
+
+        hashes: dict[str, str] = {}
+        for item in data:
+            path = str(item.get("path") or "")
+            sha256 = str(item.get("sha256") or "")
+            if path and sha256:
+                hashes[path] = sha256
+        return hashes
+
+    def _run_remote_powershell_json(self, ssh: str, script: str, timeout: float) -> Any:
+        encoded = powershell_encoded_command(script)
+        result = subprocess.run(
+            [
+                ssh,
+                self.target,
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if result.returncode != 0:
+            message = result.stderr.strip() or result.stdout.strip() or f"ssh exited with {result.returncode}"
+            raise RuntimeError(message)
+        if not result.stdout.strip():
+            return []
+
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"SSH returned invalid process JSON: {e}: {result.stdout[:500]}") from e
 
 
 class JsonlLog:
@@ -1057,16 +1213,20 @@ class ProcessMonitorApp:
         self.sort_mode_index = 0
         self.sort_desc = SORT_MODES[self.sort_mode_index][2]
         self.keyboard = KeyboardWatcher(self.handle_key)
-        self.remote_host = str(getattr(args, "remote", "") or "")
-        self.remote_collector = (
-            RemoteProcessCollector(
+        self.remote_ssh = str(getattr(args, "remote_ssh", "") or "")
+        self.remote_host = self.remote_ssh or str(getattr(args, "remote", "") or "")
+        self.remote_collector = None
+        if self.remote_ssh:
+            self.remote_collector = SshRemoteProcessCollector(
+                self.remote_ssh,
+                timeout=float(getattr(args, "remote_timeout", 15.0)),
+            )
+        elif self.remote_host:
+            self.remote_collector = RemoteProcessCollector(
                 self.remote_host,
                 timeout=float(getattr(args, "remote_timeout", 15.0)),
                 transport=str(getattr(args, "remote_transport", "auto") or "auto"),
             )
-            if self.remote_host
-            else None
-        )
         self.remote_acted: set[str] = set()
         self.remote_error = ""
         self.last_logged_remote_error = ""
@@ -1453,11 +1613,12 @@ class ProcessMonitorApp:
 
     def _vt_panel(self) -> Panel:
         if self.remote_collector:
-            active_transport = self.remote_collector.last_transport or self.remote_collector.transport
+            active_transport = self.remote_collector.last_transport or getattr(self.remote_collector, "transport", "ssh")
+            collector = "SSH PowerShell" if active_transport == "ssh" else f"PowerShell CIM/WMI ({active_transport})"
             lines = [
                 f"Host: {self.remote_host}",
                 "Mode: read-only",
-                f"Collector: PowerShell CIM/WMI ({active_transport})",
+                f"Collector: {collector}",
                 f"VirusTotal queue: {self.vt_scanner.queue_size}",
                 f"VirusTotal scanned: {self.vt_scanner.scanned_count}",
                 f"VirusTotal errors: {self.vt_scanner.error_count}",
@@ -1676,6 +1837,16 @@ def validate_remote_host(host: str) -> None:
         raise ValueError("Remote host may only contain letters, numbers, dots, dashes, underscores, and colons.")
 
 
+def validate_ssh_target(target: str) -> None:
+    allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_:@")
+    if not target or any(c not in allowed_chars for c in target):
+        raise ValueError("SSH target may only contain letters, numbers, dots, dashes, underscores, colons, and @.")
+
+
+def powershell_encoded_command(script: str) -> str:
+    return base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
+
 def is_admin() -> bool:
     if os.name != "nt":
         return os.geteuid() == 0 if hasattr(os, "geteuid") else False
@@ -1695,7 +1866,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         p.add_argument("--policy", type=Path, default=Path("policy.json"), help="Path to policy JSON")
         p.add_argument("--workdir", type=Path, default=DEFAULT_WORKDIR, help="Data folder for logs/cache/dumps/quarantine")
         p.add_argument("-remote", "--remote", help="Read-only remote Windows host/IP to monitor over PowerShell CIM")
-        p.add_argument("--remote-timeout", type=float, default=15.0, help="Remote CIM query timeout in seconds")
+        p.add_argument("--remote-ssh", help="Read-only remote Windows SSH target, for example user@192.168.1.25")
+        p.add_argument("--remote-timeout", type=float, default=15.0, help="Remote query timeout in seconds")
         p.add_argument(
             "--remote-transport",
             choices=REMOTE_TRANSPORTS,
@@ -1765,11 +1937,18 @@ def main() -> int:
     if action == "monitor":
         if args.dry_run and args.execute:
             parser.error("Choose dry-run or execute mode, not both.")
-        if args.remote and args.execute:
-            parser.error("Remote mode is read-only. Use -remote without -exec.")
+        if args.remote and args.remote_ssh:
+            parser.error("Choose --remote or --remote-ssh, not both.")
+        if (args.remote or args.remote_ssh) and args.execute:
+            parser.error("Remote mode is read-only. Use --remote or --remote-ssh without -exec.")
         if args.remote:
             try:
                 validate_remote_host(args.remote)
+            except ValueError as e:
+                parser.error(str(e))
+        if args.remote_ssh:
+            try:
+                validate_ssh_target(args.remote_ssh)
             except ValueError as e:
                 parser.error(str(e))
         if args.execute and not is_admin():

@@ -6,6 +6,7 @@ param(
     [switch]$Execute,
     [string]$ScanFile,
     [string]$Remote,
+    [string]$RemoteSsh,
     [ValidateSet("auto", "wsman", "dcom")]
     [string]$RemoteTransport = "auto",
     [string]$Policy = "policy.json",
@@ -17,18 +18,22 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent $ScriptDir
 Set-Location $Root
 
 $SelectedModes = @($DryRun.IsPresent, $Execute.IsPresent, -not [string]::IsNullOrWhiteSpace($ScanFile)) | Where-Object { $_ }
 if ($SelectedModes.Count -gt 1) {
     throw "Choose only one mode: -DryRun, -Execute, or -ScanFile <path>."
 }
-if ($ScanFile -and -not [string]::IsNullOrWhiteSpace($Remote)) {
-    throw "-Remote only applies to monitor mode."
+if ($Remote -and $RemoteSsh) {
+    throw "Choose -Remote or -RemoteSsh, not both."
 }
-if ($Execute -and -not [string]::IsNullOrWhiteSpace($Remote)) {
-    throw "Remote mode is read-only. Use -Remote without -Execute."
+if ($ScanFile -and ((-not [string]::IsNullOrWhiteSpace($Remote)) -or (-not [string]::IsNullOrWhiteSpace($RemoteSsh)))) {
+    throw "-Remote and -RemoteSsh only apply to monitor mode."
+}
+if ($Execute -and ((-not [string]::IsNullOrWhiteSpace($Remote)) -or (-not [string]::IsNullOrWhiteSpace($RemoteSsh)))) {
+    throw "Remote mode is read-only. Use -Remote or -RemoteSsh without -Execute."
 }
 
 $PythonPath = Join-Path $Root ".venv\Scripts\python.exe"
@@ -71,6 +76,10 @@ $Title = "Monitor (Dry Run)"
 if ($Remote) {
     $MonitorArgs += @("--remote", $Remote, "--remote-transport", $RemoteTransport)
     $Title = "Remote $Remote"
+}
+if ($RemoteSsh) {
+    $MonitorArgs += @("--remote-ssh", $RemoteSsh)
+    $Title = "Remote SSH $RemoteSsh"
 }
 if ($Execute) {
     $MonitorArgs += "--execute"

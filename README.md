@@ -98,9 +98,12 @@ Read-only remote monitor for one Windows LAN host:
 
 ```powershell
 procblart run -remote 192.168.1.25
+procblart run --remote-ssh username@192.168.1.25
 ```
 
-Remote mode uses PowerShell CIM/WMI from the local machine, does not kill, suspend, dump, or quarantine remote processes. By default it tries WinRM/WSMan first and then DCOM/WMI as a fallback. Remote VirusTotal support is hash-lookup only: Proc Blart computes SHA-256 on the target and queries VirusTotal from the local machine. That requires WinRM/WSMan access even if process inventory falls back to DCOM/WMI. You can force one transport while troubleshooting:
+Remote mode does not kill, suspend, dump, or quarantine remote processes.
+
+`-remote` uses PowerShell CIM/WMI from the local machine. By default it tries WinRM/WSMan first and then DCOM/WMI as a fallback. Remote VirusTotal support is hash-lookup only: Proc Blart computes SHA-256 on the target and queries VirusTotal from the local machine. That requires WinRM/WSMan access even if process inventory falls back to DCOM/WMI. You can force one transport while troubleshooting:
 
 ```powershell
 procblart run -remote 192.168.1.25 --remote-transport wsman
@@ -130,20 +133,23 @@ Test-WSMan 192.168.1.25
 Enable-NetFirewallRule -DisplayGroup "Windows Management Instrumentation (WMI)"
 ```
 
+`--remote-ssh` uses your local `ssh` client to run read-only PowerShell queries on the target. The target needs OpenSSH Server enabled and reachable. For a live TUI, SSH keys or ssh-agent are recommended so every refresh can connect without a password prompt. See [SSH Agent Setup](docs/ssh-agent-setup.md).
+
 You can also use the PowerShell launcher:
 
 ```powershell
-.\launch.ps1
-.\launch.ps1 -DryRun
-.\launch.ps1 -Execute
-.\launch.ps1 -Remote 192.168.1.25
-.\launch.ps1 -Remote 192.168.1.25 -RemoteTransport dcom
+.\scripts\launch.ps1
+.\scripts\launch.ps1 -DryRun
+.\scripts\launch.ps1 -Execute
+.\scripts\launch.ps1 -Remote 192.168.1.25
+.\scripts\launch.ps1 -Remote 192.168.1.25 -RemoteTransport dcom
+.\scripts\launch.ps1 -RemoteSsh username@192.168.1.25
 ```
 
 Run the launcher in the current terminal instead of opening Windows Terminal panes:
 
 ```powershell
-.\launch.ps1 -DryRun -CurrentTerminal
+.\scripts\launch.ps1 -DryRun -CurrentTerminal
 ```
 
 The launcher also accepts `-Policy`, `-Workdir`, `-Interval`, and `-MaxRows`.
@@ -163,7 +169,7 @@ procblart scan .\path\to\file.exe > result.json
 PowerShell launcher equivalent:
 
 ```powershell
-.\launch.ps1 -ScanFile .\path\to\file.exe
+.\scripts\launch.ps1 -ScanFile .\path\to\file.exe
 ```
 
 ## Logs
